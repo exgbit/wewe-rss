@@ -1,4 +1,11 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+  forwardRef,
+} from '@nestjs/common';
 import { PrismaService } from '@server/prisma/prisma.service';
 import { Cron } from '@nestjs/schedule';
 import { TrpcService } from '@server/trpc/trpc.service';
@@ -26,6 +33,7 @@ export class FeedsService {
   private request: Got;
   constructor(
     private readonly prismaService: PrismaService,
+    @Inject(forwardRef(() => TrpcService))
     private readonly trpcService: TrpcService,
     private readonly configService: ConfigService,
   ) {
@@ -98,6 +106,70 @@ export class FeedsService {
         await new Promise((resolve) => setTimeout(resolve, 30 * 1e3));
       }
     }
+  }
+
+  // 每天凌晨3点执行文章内容填充
+  @Cron('0 3 * * *', {
+    name: 'fillArticleContent',
+    timeZone: 'Asia/Shanghai',
+  })
+  async handleFillArticleContentCron() {
+    this.logger.debug('Called handleFillArticleContentCron');
+
+    // 使用原始SQL查询获取没有内容的文章
+    const articles = await this.prismaService.$queryRaw<
+      Array<{
+        id: string;
+        title: string;
+        mpId: string;
+        picUrl: string;
+        publishTime: number;
+      }>
+    >`
+      SELECT id, title, mpId as "mpId", picUrl as "picUrl", publishTime as "publishTime"
+      FROM articles
+      WHERE content IS NULL
+      LIMIT 100
+    `;
+
+    this.logger.debug(`找到 ${articles.length} 篇没有内容的文章`);
+
+    if (articles.length === 0) {
+      this.logger.debug('没有需要填充内容的文章，任务结束');
+      return;
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const article of articles) {
+      try {
+        this.logger.debug(`处理文章: ${article.title} (${article.id})`);
+
+        // 获取文章内容
+        const content = await this.tryGetContent(article.id);
+
+        // 使用原始SQL更新文章内容
+        await this.prismaService.$executeRaw`
+          UPDATE articles
+          SET content = ${content}
+          WHERE id = ${article.id}
+        `;
+
+        successCount++;
+
+        // 每处理5篇文章暂停一下，避免请求过于频繁
+        if (successCount % 5 === 0) {
+          this.logger.debug(`已成功处理 ${successCount} 篇文章，暂停30秒...`);
+          await new Promise((resolve) => setTimeout(resolve, 30 * 1000));
+        }
+      } catch (error) {
+        this.logger.error(`处理文章 ${article.id} 失败:`, error);
+        failCount++;
+      }
+    }
+
+    this.logger.debug(`处理完成! 成功: ${successCount}, 失败: ${failCount}`);
   }
 
   async cleanHtml(source: string) {

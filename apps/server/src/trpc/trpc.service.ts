@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConfigurationType } from '@server/configuration';
 import { defaultCount, statusMap } from '@server/constants';
@@ -8,6 +8,7 @@ import Axios, { AxiosInstance } from 'axios';
 import dayjs from 'dayjs';
 import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
+import { FeedsService } from '@server/feeds/feeds.service';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -38,6 +39,8 @@ export class TrpcService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly configService: ConfigService,
+    @Inject(forwardRef(() => FeedsService))
+    private readonly feedsService: FeedsService,
   ) {
     const { url } =
       this.configService.get<ConfigurationType['platform']>('platform')!;
@@ -175,37 +178,38 @@ export class TrpcService {
     const articles = await this.getMpArticles(mpId, page);
 
     if (articles.length > 0) {
-      let results;
-      const { type } =
-        this.configService.get<ConfigurationType['database']>('database')!;
-      if (type === 'sqlite') {
-        // sqlite3 不支持 createMany
-        const inserts = articles.map(({ id, picUrl, publishTime, title }) =>
-          this.prismaService.article.upsert({
-            create: { id, mpId, picUrl, publishTime, title },
-            update: {
-              publishTime,
-              title,
+      for (const article of articles) {
+        try {
+          // 获取文章内容
+          const content = await this.feedsService.tryGetContent(article.id);
+
+          // 更新或创建文章，包含内容
+          await this.prismaService.article.upsert({
+            create: {
+              id: article.id,
+              mpId,
+              picUrl: article.picUrl,
+              publishTime: article.publishTime,
+              title: article.title,
+              content,
             },
-            where: { id },
-          }),
-        );
-        results = await this.prismaService.$transaction(inserts);
-      } else {
-        results = await (this.prismaService.article as any).createMany({
-          data: articles.map(({ id, picUrl, publishTime, title }) => ({
-            id,
-            mpId,
-            picUrl,
-            publishTime,
-            title,
-          })),
-          skipDuplicates: true,
-        });
+            update: {
+              publishTime: article.publishTime,
+              title: article.title,
+              content,
+            },
+            where: { id: article.id },
+          });
+        } catch (error) {
+          this.logger.error(
+            `Failed to get content for article ${article.id}:`,
+            error,
+          );
+        }
       }
 
       this.logger.debug(
-        `refreshMpArticlesAndUpdateFeed create results: ${JSON.stringify(results)}`,
+        `refreshMpArticlesAndUpdateFeed processed ${articles.length} articles with content`,
       );
     }
 

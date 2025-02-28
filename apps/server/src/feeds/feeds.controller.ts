@@ -10,7 +10,7 @@ import {
   Response,
 } from '@nestjs/common';
 import { FeedsService } from './feeds.service';
-import { Response as Res, Request as Req } from 'express';
+import { Response as ExpressResponse, Request as Req } from 'express';
 
 @Controller('feeds')
 export class FeedsController {
@@ -26,7 +26,7 @@ export class FeedsController {
   @Get('/all.(json|rss|atom)')
   async getFeeds(
     @Request() req: Req,
-    @Response() res: Res,
+    @Response() res: ExpressResponse,
     @Query('limit', new DefaultValuePipe(30), ParseIntPipe) limit: number = 30,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number = 1,
     @Query('mode') mode: string,
@@ -51,7 +51,7 @@ export class FeedsController {
 
   @Get('/:feed')
   async getFeed(
-    @Response() res: Res,
+    @Response() res: ExpressResponse,
     @Param('feed') feed: string,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number = 10,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number = 1,
@@ -79,5 +79,14 @@ export class FeedsController {
 
     res.setHeader('Content-Type', mimeType);
     res.send(content);
+  }
+
+  @Get('article/:id/content')
+  async getArticleContent(
+    @Param('id') id: string,
+    @Response() res: ExpressResponse,
+  ) {
+    const content = await this.feedsService.tryGetContent(id);
+    return res.send({ content });
   }
 }
